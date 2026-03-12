@@ -5,6 +5,16 @@ import streamlit as st
 import altair as alt
 import os
 
+# ─── Altair/PyArrow compatibility fix ────────────────────────────────────────
+# pyarrow >= 13 serializes pd.StringDtype as LargeUtf8, which older Altair/Vega
+# frontends don't recognise. Cast all object/string columns to plain Python str.
+def fix_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    for col in df.columns:
+        if df[col].dtype == object or str(df[col].dtype) in ('string', 'StringDtype'):
+            df = df.copy()
+            df[col] = df[col].astype(str)
+    return df
+
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Bethacon | ETH Trading AI",
@@ -448,6 +458,7 @@ with tab2:
         'Strategy':   hist_eq,
         'Buy & Hold': bh_eq.values,
     }).melt(id_vars='snapped_at', var_name='Type', value_name='Equity')
+    eq_chart_df = fix_dtypes(eq_chart_df)
 
     hist_chart = alt.Chart(eq_chart_df).mark_line(strokeWidth=2).encode(
         x=alt.X('snapped_at:T', title='', axis=alt.Axis(labelColor='#5a6a85')),
@@ -484,6 +495,7 @@ with tab3:
         'Feature': feat_cols[:len(model.feature_importances_)],
         'Importance': model.feature_importances_
     }).sort_values('Importance', ascending=False)
+    fi = fix_dtypes(fi)
 
     fi_chart = alt.Chart(fi).mark_bar(cornerRadiusEnd=4,
         color=alt.Gradient(gradient='linear',
@@ -502,6 +514,7 @@ with tab3:
     sig_dist = ds['signal'].value_counts().reset_index()
     sig_dist.columns = ['signal','count']
     sig_dist['Label'] = sig_dist['signal'].map({0:'SELL',1:'BUY'})
+    sig_dist = fix_dtypes(sig_dist)
     dist_chart = alt.Chart(sig_dist).mark_bar(cornerRadiusEnd=4).encode(
         x=alt.X('Label:N', axis=alt.Axis(labelColor='#e8edf5')),
         y=alt.Y('count:Q', axis=alt.Axis(labelColor='#5a6a85', gridColor='#1e2d4a')),
@@ -574,6 +587,7 @@ with tab4:
         'Backtest':  [-66, -45, -32, +147],
         'Features':  [9, 15, 32, 32],
     })
+    perf_data = fix_dtypes(perf_data)
 
     f1_chart = alt.Chart(perf_data).mark_bar(cornerRadiusEnd=4,
         color=alt.Gradient(gradient='linear',
