@@ -213,7 +213,7 @@ def simulate_future(seed, n_days, start_price, vol, hist_df):
     combined = add_features(combined).fillna(0)
     sim = combined.tail(n_days).copy().reset_index(drop=True)
     avail = [f for f in feat_cols if f in sim.columns]
-    proba = model.predict_proba(sim[avail].values)[:, 1]
+    proba = model.predict_proba(sim[avail])[:, 1]
     sim['signal_proba'] = proba
     sim['signal_pred']  = np.where(proba >= buy_thr, 1,
                           np.where(proba <= sell_thr, 0, -1))  # -1 = HOLD
@@ -385,12 +385,20 @@ with tab1:
     if trades:
         with st.expander(f"📋 Trade Log ({len(trades)} operazioni)"):
             log_df = pd.DataFrame(trades)
-            st.dataframe(
-                log_df.style.format({"Price": "${:,.2f}", "Equity": "${:,.2f}"}).applymap(
+            styled = log_df.style.format({"Price": "${:,.2f}", "Equity": "${:,.2f}"})
+            try:
+                # pandas >= 2.1
+                styled = styled.map(
                     lambda v: 'color:#00e676' if v=='BUY' else ('color:#ff1744' if v=='SELL' else ''),
                     subset=['Action']
-                ), use_container_width=True
-            )
+                )
+            except AttributeError:
+                # pandas < 2.1 fallback
+                styled = styled.applymap(
+                    lambda v: 'color:#00e676' if v=='BUY' else ('color:#ff1744' if v=='SELL' else ''),
+                    subset=['Action']
+                )
+            st.dataframe(styled, use_container_width=True)
     else:
         st.info("Nessun trade eseguito in questo scenario.")
 
