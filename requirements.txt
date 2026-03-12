@@ -4,5 +4,5 @@ numpy>=1.26.0
 pandas
 matplotlib
 streamlit
-altair
+altair==4.2.2
 
