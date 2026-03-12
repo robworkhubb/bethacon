@@ -27,4 +27,4 @@ gb.fit(x_train, y_train)
 y_pred = gb.predict(x_test)
 print(y_pred)
 # Salva modello per predizioni future
-joblib.dump(gb, 'model/bethacon v1.pkl')
+joblib.dump(gb, 'model/bethacon_v1.pkl')

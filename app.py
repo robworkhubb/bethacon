@@ -17,7 +17,7 @@ ds = load_data()
 x_columns = ['price_vs_ma7', 'price_vs_ma14', 'momentum_7', 'price_pct_change', 
              'total_volume', 'rsi', 'macd', 'signal_line', 'histogram']
 
-model = joblib.load('model/bethaconv1.pkl')
+model = joblib.load('model/bethacon_v1.pkl')
 
 capital_init = st.sidebar.number_input("Initial Capital ($)", value=10000)
 fee_pct = st.sidebar.number_input("Fee per trade (%)", value=0.1)
