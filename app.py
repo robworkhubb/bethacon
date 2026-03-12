@@ -25,7 +25,6 @@ days_future = st.sidebar.slider("Future days to predict", 10, 200, 50)
 
 # Ultimo giorno storico
 last_day = ds.iloc[-1]
-last_price = last_day['price']
 last_date = last_day['snapped_at']
 
 # Copia ultima riga per base dei futuri
@@ -38,9 +37,7 @@ def simulate_future_trading(future_df, model, capital, fee):
     equity_curve = []
     signals = []
 
-    # Partiamo dall'ultimo prezzo storico
-    last_price = future_df.iloc[0]['price']
-
+    current_price = st.sidebar.number_input("Actual Price ($)", value=float(ds['price'].iloc[-1]))
     # Ultime features
     last_features = future_df.iloc[0][x_columns].values
 
@@ -52,10 +49,10 @@ def simulate_future_trading(future_df, model, capital, fee):
 
         # Prezzo simulato: piccolo random walk a partire dall'ultimo prezzo
         if i == 0:
-            price = last_price
+            price = current_price
         else:
-            price = last_price * (1 + np.random.normal(0, 0.01))  # variazioni del 1% circa
-        last_price = price  # aggiorniamo per il giorno successivo
+            price = current_price * (1 + np.random.normal(0, 0.01))  # variazioni del 1% circa
+        current_price = price  # aggiorniamo per il giorno successivo
 
         # Gestione posizione
         if signal == 1 and cash > 0:
@@ -72,33 +69,48 @@ def simulate_future_trading(future_df, model, capital, fee):
         last_features = last_features  # per ora le manteniamo costanti
 
     future_df['signal_pred'] = signals
-    future_df['price'] = [last_price * (1 + np.random.normal(0, 0.01)) for _ in range(len(future_df))]  # opzionale
+    future_df['price'] = [current_price * (1 + np.random.normal(0, 0.01)) for _ in range(len(future_df))]  # opzionale
     return future_df, equity_curve
 
 future_df, equity = simulate_future_trading(future_df, model, capital_init, fee_pct)
 future_df['equity'] = equity
 
-# Chart
-base = alt.Chart(future_df).encode(x='snapped_at:T')
+def plot_trading_signals(future_df):
+    base = alt.Chart(future_df).encode(x='snapped_at:T')
 
-price_line = base.mark_line(color='blue').encode(
-    y='price:Q',
-    tooltip=['snapped_at:T', 'price:Q']
-)
-equity_line = base.mark_line(color='green').encode(
-    y='equity:Q',
-    tooltip=['snapped_at:T', 'equity:Q']
-)
-buy_points = base.transform_filter(alt.datum.signal_pred == 1).mark_point(
-    shape='triangle-up', size=100, color='green'
-).encode(y='price:Q', tooltip=['snapped_at:T', 'price:Q'])
-sell_points = base.transform_filter(alt.datum.signal_pred == 0).mark_point(
-    shape='triangle-down', size=100, color='red'
-).encode(y='price:Q', tooltip=['snapped_at:T', 'price:Q'])
+    # Linea prezzo
+    price_line = base.mark_line(color='blue').encode(
+        y=alt.Y('price:Q', title='Prezzo ETH'),
+        tooltip=['snapped_at:T', 'price:Q']
+    )
 
-chart = (price_line + equity_line + buy_points + sell_points).interactive()
-st.altair_chart(chart, use_container_width=True)
+    # Linea equity su asse Y secondario
+    equity_line = base.mark_line(color='green').encode(
+        y=alt.Y('equity:Q', title='Equity', axis=alt.Axis(orient='right')),
+        tooltip=['snapped_at:T', 'equity:Q']
+    )
 
+    # Punti BUY
+    buy_points = base.transform_filter(alt.datum.signal_pred == 1).mark_point(
+        shape='triangle-up', size=80, color='green', opacity=0.8
+    ).encode(
+        y='price:Q',
+        tooltip=['snapped_at:T', 'price:Q', 'equity:Q']
+    )
+
+    # Punti SELL
+    sell_points = base.transform_filter(alt.datum.signal_pred == 0).mark_point(
+        shape='triangle-down', size=80, color='red', opacity=0.8
+    ).encode(
+        y='price:Q',
+        tooltip=['snapped_at:T', 'price:Q', 'equity:Q']
+    )
+
+    # Chart combinato
+    chart = (price_line + equity_line + buy_points + sell_points).interactive()
+    st.altair_chart(chart, use_container_width=True)
+
+plot_trading_signals(future_df)
 # Statistiche
 def trading_stats(equity_curve, capital_init):
     returns = np.diff(equity_curve) / equity_curve[:-1]
