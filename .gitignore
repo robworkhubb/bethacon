@@ -1,0 +1,10 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+betha-venv/
+env/
+.env
+
+# --- IDE e Sistema ---
+.vscode/
