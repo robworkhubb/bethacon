@@ -24,13 +24,13 @@ model = load_model()
 x_columns = ['price_vs_ma7', 'price_vs_ma14', 'momentum_7', 'price_pct_change', 
              'total_volume', 'rsi', 'macd', 'signal_line', 'histogram']
 
-st.sidebar.header("Parametri di Simulazione")
+st.sidebar.header("Simulation Parameters")
 last_known_price = float(ds['price'].iloc[-1])
-current_eth_price = st.sidebar.number_input("Prezzo Attuale ETH ($)", value=last_known_price)
-capital_init = st.sidebar.number_input("Capitale Iniziale ($)", value=10000.0)
-fee_pct = st.sidebar.number_input("Fee per trade (%)", value=0.1)
-days_future = st.sidebar.slider("Giorni futuri da simulare", 10, 200, 50)
-volatility = st.sidebar.slider("Volatilità giornaliera stimata (%)", 1.0, 10.0, 3.0) / 100.0
+current_eth_price = st.sidebar.number_input("Current ETH Price ($)", value=last_known_price)
+capital_init = st.sidebar.number_input("Initial Capital ($)", value=10000.0)
+fee_pct = st.sidebar.number_input("Trading Fee (%)", value=0.1)
+days_future = st.sidebar.slider("Future Days to Simulate", 10, 200, 50)
+volatility = st.sidebar.slider("Estimated Daily Volatility (%)", 1.0, 10.0, 3.0) / 100.0
 
 historical_tail = ds.tail(50).copy()
 future_dates = [historical_tail['snapped_at'].iloc[-1] + pd.Timedelta(days=i+1) for i in range(days_future)]
@@ -96,59 +96,79 @@ for i, row in future_sim_df.iterrows():
 
 future_sim_df['equity'] = equity_curve
 
-st.subheader("Simulazione Trading su Scenario Futuro")
+st.subheader("Future Scenario Analysis")
 
 color_scale = alt.Scale(
-    domain=['Prezzo ETH', 'Equity (Capitale)', 'Segnale BUY', 'Segnale SELL'],
-    range=['#1f77b4', '#2ca02c', 'green', 'red']
+    domain=['ETH Price', 'BUY Signal', 'SELL Signal'],
+    range=['#1f77b4', '#00ff00', '#ff0000']
 )
 
-# Encoding unificato per la legenda
-color_encoding = alt.Color('type:N', scale=color_scale, title="Legenda")
+base = alt.Chart(future_sim_df).encode(
+    x=alt.X('snapped_at:T', title='Date')
+).properties(width=900)
 
-base = alt.Chart(future_sim_df).encode(x=alt.X('snapped_at:T', title='Data'))
-
-price_line = base.mark_line().encode(
-    y=alt.Y('price:Q', title='Prezzo ETH ($)', scale=alt.Scale(zero=False),
-            axis=alt.Axis(titleColor='#1f77b4', labelColor='#1f77b4')),
-    color=color_encoding,
+price_line = base.mark_line(strokeWidth=2).encode(
+    y=alt.Y('price:Q', title='ETH Price ($)', scale=alt.Scale(zero=False)),
+    color=alt.Color('type:N', scale=color_scale, title="Legend"),
     tooltip=['snapped_at:T', 'price:Q']
-).transform_calculate(type='"Prezzo ETH"')
-
-equity_line = base.mark_line(strokeDash=[5, 5]).encode(
-    y=alt.Y('equity:Q', title='Equity Capitale ($)', 
-            axis=alt.Axis(orient='right', titleColor='#2ca02c', labelColor='#2ca02c', offset=35),
-            scale=alt.Scale(zero=False)),
-    color=color_encoding,
-    tooltip=['snapped_at:T', 'equity:Q']
-).transform_calculate(type='"Equity (Capitale)"')
+).transform_calculate(type='"ETH Price"')
 
 buy_points = base.transform_filter(alt.datum.signal_pred == 1).mark_point(
-    shape='triangle-up', size=150, filled=True, opacity=1
+    shape='triangle-up', size=200, filled=True, opacity=1
 ).encode(
     y='price:Q',
-    color=color_encoding,
+    color=alt.Color('type:N'),
     tooltip=['snapped_at:T', 'price:Q']
-).transform_calculate(type='"Segnale BUY"')
+).transform_calculate(type='"BUY Signal"')
 
 sell_points = base.transform_filter(alt.datum.signal_pred == 0).mark_point(
-    shape='triangle-down', size=150, filled=True, opacity=1
+    shape='triangle-down', size=200, filled=True, opacity=1
 ).encode(
     y='price:Q',
-    color=color_encoding,
+    color=alt.Color('type:N'),
     tooltip=['snapped_at:T', 'price:Q']
-).transform_calculate(type='"Segnale SELL"')
+).transform_calculate(type='"SELL Signal"')
 
-combined_chart = alt.layer(price_line, equity_line, buy_points, sell_points).resolve_scale(
-    y='independent',
-    color='shared'
-).properties(width=800, height=450).configure_legend(
-    orient='right', padding=10, strokeColor='gray', cornerRadius=5
+upper_chart = alt.layer(price_line, buy_points, sell_points).properties(height=350)
+
+# Lower chart: Equity area
+equity_area = base.mark_area(
+    line={'color':'#2ca02c'},
+    color=alt.Gradient(
+        gradient='linear',
+        stops=[alt.GradientStop(color='#2ca02c', offset=0),
+               alt.GradientStop(color='transparent', offset=1)],
+        x1=1, x2=1, y1=1, y2=0
+    ),
+    opacity=0.3
+).encode(
+    y=alt.Y('equity:Q', title='Portfolio Equity ($)', scale=alt.Scale(zero=False)),
+    tooltip=['snapped_at:T', 'equity:Q']
 )
 
-st.altair_chart(combined_chart, use_container_width=True)
+# Horizontal line for Initial Capital reference
+breakeven_line = alt.Chart(pd.DataFrame({'y': [capital_init]})).mark_rule(
+    strokeDash=[5, 5], color='gray', strokeWidth=2
+).encode(y='y:Q')
 
-st.subheader("Future Forecast Statistics")
+lower_chart = alt.layer(equity_area, breakeven_line).properties(height=200)
+
+final_chart = alt.vconcat(
+    upper_chart, 
+    lower_chart
+).resolve_scale(
+    color='shared'
+).configure_axis(
+    labelFontSize=11,
+    titleFontSize=12
+).configure_legend(
+    orient='top',
+    padding=10
+)
+
+st.altair_chart(final_chart, use_container_width=True)
+
+st.subheader("Forecast Statistics")
 total_return = (equity_curve[-1] - capital_init) / capital_init * 100
 returns = np.diff(equity_curve) / (np.array(equity_curve[:-1]) + 1e-9)
 max_drawdown = np.min(equity_curve / np.maximum.accumulate(equity_curve) - 1) * 100
@@ -156,15 +176,14 @@ std_returns = np.std(returns)
 sharpe = np.mean(returns) / std_returns * np.sqrt(365) if std_returns > 0 else 0
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Capitale Iniziale", f"${capital_init:,.2f}")
-c2.metric("Capitale Finale", f"${equity_curve[-1]:,.2f}", f"{total_return:.2f}%")
+c1.metric("Initial Capital", f"${capital_init:,.2f}")
+c2.metric("Estimated Final Capital", f"${equity_curve[-1]:,.2f}", f"{total_return:.2f}%")
 c3.metric("Max Drawdown", f"{max_drawdown:.2f}%")
 c4.metric("Sharpe Ratio", f"{sharpe:.2f}")
 
-# Nuova sezione: Log dei Trade
 if trade_log:
-    with st.expander("Visualizza Log Operazioni Simulate"):
+    with st.expander("View Simulated Trade Log"):
         log_df = pd.DataFrame(trade_log)
         st.dataframe(log_df.style.format({"Price": "${:,.2f}", "Equity": "${:,.2f}"}), use_container_width=True)
 else:
-    st.info("Nessuna operazione eseguita dal modello nel periodo simulato.")
+    st.info("No trades executed by the model during the simulated period.")
