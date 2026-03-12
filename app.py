@@ -4,126 +4,167 @@ import joblib
 import streamlit as st
 import altair as alt
 
-st.title("Bethacon Trading Simulator - Live Prediction (Future)")
+st.set_page_config(page_title="Bethacon Trading", layout="wide")
+st.title("Bethacon Trading Simulator - Future Scenarios")
 
 @st.cache_data
 def load_data():
     df = pd.read_csv("data/processed/eth-dataset-processed.csv")
     df['snapped_at'] = pd.to_datetime(df['snapped_at'])
-    df = df.sort_values('snapped_at')
+    df = df.sort_values('snapped_at').reset_index(drop=True)
     return df
 
+@st.cache_resource
+def load_model():
+    return joblib.load('model/bethacon_v1.pkl')
+
 ds = load_data()
+model = load_model()
+
 x_columns = ['price_vs_ma7', 'price_vs_ma14', 'momentum_7', 'price_pct_change', 
              'total_volume', 'rsi', 'macd', 'signal_line', 'histogram']
 
-model = joblib.load('model/bethacon_v1.pkl')
-
-capital_init = st.sidebar.number_input("Initial Capital ($)", value=10000)
+st.sidebar.header("Parametri di Simulazione")
+last_known_price = float(ds['price'].iloc[-1])
+current_eth_price = st.sidebar.number_input("Prezzo Attuale ETH ($)", value=last_known_price)
+capital_init = st.sidebar.number_input("Capitale Iniziale ($)", value=10000.0)
 fee_pct = st.sidebar.number_input("Fee per trade (%)", value=0.1)
-days_future = st.sidebar.slider("Future days to predict", 10, 200, 50)
+days_future = st.sidebar.slider("Giorni futuri da simulare", 10, 200, 50)
+volatility = st.sidebar.slider("Volatilità giornaliera stimata (%)", 1.0, 10.0, 3.0) / 100.0
 
-# Ultimo giorno storico
-last_day = ds.iloc[-1]
-last_date = last_day['snapped_at']
+historical_tail = ds.tail(50).copy()
+future_dates = [historical_tail['snapped_at'].iloc[-1] + pd.Timedelta(days=i+1) for i in range(days_future)]
+future_prices = [current_eth_price]
 
-# Copia ultima riga per base dei futuri
-future_df = pd.DataFrame([last_day.copy() for _ in range(days_future)])
-future_df['snapped_at'] = [last_date + pd.Timedelta(days=i+1) for i in range(days_future)]
+for _ in range(1, days_future):
+    next_price = future_prices[-1] * (1 + np.random.normal(0, volatility))
+    future_prices.append(next_price)
 
-def simulate_future_trading(future_df, model, capital, fee):
-    cash = capital
-    position = 0
-    equity_curve = []
-    signals = []
+future_df = pd.DataFrame({
+    'snapped_at': future_dates,
+    'price': future_prices,
+    'total_volume': historical_tail['total_volume'].mean()
+})
 
-    current_price = st.sidebar.number_input("Actual Price ($)", value=float(ds['price'].iloc[-1]))
-    # Ultime features
-    last_features = future_df.iloc[0][x_columns].values
+combined_df = pd.concat([historical_tail, future_df], ignore_index=True)
 
-    for i in range(len(future_df)):
-        # Predizione del segnale
-        features = last_features.reshape(1, -1)
-        signal = model.predict(features)[0]
-        signals.append(signal)
+combined_df['ma7'] = combined_df['price'].rolling(window=7).mean()
+combined_df['ma14'] = combined_df['price'].rolling(window=14).mean()
+combined_df['price_vs_ma7'] = combined_df['price'] - combined_df['ma7']
+combined_df['price_vs_ma14'] = combined_df['price'] - combined_df['ma14']
+combined_df['momentum_7'] = combined_df['price'] - combined_df['price'].shift(7)
+combined_df['price_pct_change'] = combined_df['price'].pct_change()
 
-        # Prezzo simulato: piccolo random walk a partire dall'ultimo prezzo
-        if i == 0:
-            price = current_price
-        else:
-            price = current_price * (1 + np.random.normal(0, 0.01))  # variazioni del 1% circa
-        current_price = price  # aggiorniamo per il giorno successivo
+delta = combined_df['price'].diff()
+gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+rs = gain / (loss + 1e-9)
+combined_df['rsi'] = 100 - (100 / (1 + rs))
 
-        # Gestione posizione
-        if signal == 1 and cash > 0:
-            position = cash / price * (1 - fee/100)
-            cash = 0
-        elif signal == 0 and position > 0:
-            cash = position * price * (1 - fee/100)
-            position = 0
+ema12 = combined_df['price'].ewm(span=12, adjust=False).mean()
+ema26 = combined_df['price'].ewm(span=26, adjust=False).mean()
+combined_df['macd'] = ema12 - ema26
+combined_df['signal_line'] = combined_df['macd'].ewm(span=9, adjust=False).mean()
+combined_df['histogram'] = combined_df['macd'] - combined_df['signal_line']
 
-        total_equity = cash + position * price
-        equity_curve.append(total_equity)
+future_sim_df = combined_df.tail(days_future).copy().reset_index(drop=True)
+future_sim_df = future_sim_df.fillna(0)
 
-        # Aggiorna features per il prossimo giorno se vuoi fare un modello step-by-step più realistico
-        last_features = last_features  # per ora le manteniamo costanti
+X_future = future_sim_df[x_columns].values
+future_sim_df['signal_pred'] = model.predict(X_future)
 
-    future_df['signal_pred'] = signals
-    future_df['price'] = [current_price * (1 + np.random.normal(0, 0.01)) for _ in range(len(future_df))]  # opzionale
-    return future_df, equity_curve
+cash = capital_init
+position = 0
+equity_curve = []
+trade_log = []
 
-future_df, equity = simulate_future_trading(future_df, model, capital_init, fee_pct)
-future_df['equity'] = equity
+for i, row in future_sim_df.iterrows():
+    signal = row['signal_pred']
+    price = row['price']
+    date = row['snapped_at']
+    
+    if signal == 1 and cash > 0:
+        position = cash / price * (1 - fee_pct/100)
+        cash = 0
+        trade_log.append({"Date": date, "Action": "BUY", "Price": price, "Equity": position * price})
+    elif signal == 0 and position > 0:
+        cash = position * price * (1 - fee_pct/100)
+        position = 0
+        trade_log.append({"Date": date, "Action": "SELL", "Price": price, "Equity": cash})
+        
+    equity_curve.append(cash + (position * price))
 
-def plot_trading_signals(future_df):
-    base = alt.Chart(future_df).encode(x='snapped_at:T')
+future_sim_df['equity'] = equity_curve
 
-    # Linea prezzo
-    price_line = base.mark_line(color='blue').encode(
-        y=alt.Y('price:Q', title='Prezzo ETH'),
-        tooltip=['snapped_at:T', 'price:Q']
-    )
+st.subheader("Simulazione Trading su Scenario Futuro")
 
-    # Linea equity su asse Y secondario
-    equity_line = base.mark_line(color='green').encode(
-        y=alt.Y('equity:Q', title='Equity', axis=alt.Axis(orient='right')),
-        tooltip=['snapped_at:T', 'equity:Q']
-    )
+color_scale = alt.Scale(
+    domain=['Prezzo ETH', 'Equity (Capitale)', 'Segnale BUY', 'Segnale SELL'],
+    range=['#1f77b4', '#2ca02c', 'green', 'red']
+)
 
-    # Punti BUY
-    buy_points = base.transform_filter(alt.datum.signal_pred == 1).mark_point(
-        shape='triangle-up', size=80, color='green', opacity=0.8
-    ).encode(
-        y='price:Q',
-        tooltip=['snapped_at:T', 'price:Q', 'equity:Q']
-    )
+# Encoding unificato per la legenda
+color_encoding = alt.Color('type:N', scale=color_scale, title="Legenda")
 
-    # Punti SELL
-    sell_points = base.transform_filter(alt.datum.signal_pred == 0).mark_point(
-        shape='triangle-down', size=80, color='red', opacity=0.8
-    ).encode(
-        y='price:Q',
-        tooltip=['snapped_at:T', 'price:Q', 'equity:Q']
-    )
+base = alt.Chart(future_sim_df).encode(x=alt.X('snapped_at:T', title='Data'))
 
-    # Chart combinato
-    chart = (price_line + equity_line + buy_points + sell_points).interactive()
-    st.altair_chart(chart, use_container_width=True)
+price_line = base.mark_line().encode(
+    y=alt.Y('price:Q', title='Prezzo ETH ($)', scale=alt.Scale(zero=False),
+            axis=alt.Axis(titleColor='#1f77b4', labelColor='#1f77b4')),
+    color=color_encoding,
+    tooltip=['snapped_at:T', 'price:Q']
+).transform_calculate(type='"Prezzo ETH"')
 
-plot_trading_signals(future_df)
-# Statistiche
-def trading_stats(equity_curve, capital_init):
-    returns = np.diff(equity_curve) / equity_curve[:-1]
-    total_return = (equity_curve[-1] - capital_init) / capital_init * 100
-    max_drawdown = np.min(equity_curve / np.maximum.accumulate(equity_curve) - 1) * 100
-    sharpe_ratio = np.mean(returns) / (np.std(returns)+1e-9) * np.sqrt(252)
-    return total_return, max_drawdown, sharpe_ratio
+equity_line = base.mark_line(strokeDash=[5, 5]).encode(
+    y=alt.Y('equity:Q', title='Equity Capitale ($)', 
+            axis=alt.Axis(orient='right', titleColor='#2ca02c', labelColor='#2ca02c', offset=35),
+            scale=alt.Scale(zero=False)),
+    color=color_encoding,
+    tooltip=['snapped_at:T', 'equity:Q']
+).transform_calculate(type='"Equity (Capitale)"')
 
-total_ret, max_dd, sharpe = trading_stats(equity, capital_init)
+buy_points = base.transform_filter(alt.datum.signal_pred == 1).mark_point(
+    shape='triangle-up', size=150, filled=True, opacity=1
+).encode(
+    y='price:Q',
+    color=color_encoding,
+    tooltip=['snapped_at:T', 'price:Q']
+).transform_calculate(type='"Segnale BUY"')
+
+sell_points = base.transform_filter(alt.datum.signal_pred == 0).mark_point(
+    shape='triangle-down', size=150, filled=True, opacity=1
+).encode(
+    y='price:Q',
+    color=color_encoding,
+    tooltip=['snapped_at:T', 'price:Q']
+).transform_calculate(type='"Segnale SELL"')
+
+combined_chart = alt.layer(price_line, equity_line, buy_points, sell_points).resolve_scale(
+    y='independent',
+    color='shared'
+).properties(width=800, height=450).configure_legend(
+    orient='right', padding=10, strokeColor='gray', cornerRadius=5
+)
+
+st.altair_chart(combined_chart, use_container_width=True)
 
 st.subheader("Future Forecast Statistics")
-st.markdown(f"- **Initial Capital:** €{capital_init: 0.2f}")
-st.markdown(f"- **Estimated Final Capital:** €{equity[-1]: 0.2f}")
-st.markdown(f"- **Estimated Total Return:** {total_ret: 0.2f}%")
-st.markdown(f"- **Estimated Max Drawdown:** {max_dd: 0.2f}%")
-st.markdown(f"- **Estimated Sharpe Ratio:** {sharpe: 0.2f}")
+total_return = (equity_curve[-1] - capital_init) / capital_init * 100
+returns = np.diff(equity_curve) / (np.array(equity_curve[:-1]) + 1e-9)
+max_drawdown = np.min(equity_curve / np.maximum.accumulate(equity_curve) - 1) * 100
+std_returns = np.std(returns)
+sharpe = np.mean(returns) / std_returns * np.sqrt(365) if std_returns > 0 else 0
+
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Capitale Iniziale", f"${capital_init:,.2f}")
+c2.metric("Capitale Finale", f"${equity_curve[-1]:,.2f}", f"{total_return:.2f}%")
+c3.metric("Max Drawdown", f"{max_drawdown:.2f}%")
+c4.metric("Sharpe Ratio", f"{sharpe:.2f}")
+
+# Nuova sezione: Log dei Trade
+if trade_log:
+    with st.expander("Visualizza Log Operazioni Simulate"):
+        log_df = pd.DataFrame(trade_log)
+        st.dataframe(log_df.style.format({"Price": "${:,.2f}", "Equity": "${:,.2f}"}), use_container_width=True)
+else:
+    st.info("Nessuna operazione eseguita dal modello nel periodo simulato.")
